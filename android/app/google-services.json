@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "606802822852",
+    "project_id": "bakeflow-20fb9",
+    "storage_bucket": "bakeflow-20fb9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:606802822852:android:9efe09d2b501236770ab91",
+        "android_client_info": {
+          "package_name": "com.crumbandcream.college_bakery_flutter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAFrxjKr8OpWrJssJH1Hj1eLyaeAyA-qw8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

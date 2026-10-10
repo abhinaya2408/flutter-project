@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// Firestore rules for the Crumb & Cream Flutter app.
+//
+// The web prototype kept every record in one browser's LocalStorage, so there
+// was no access control beyond "whoever has this browser". These rules give the
+// same shape of access to the same data, but require a signed-in Firebase
+// Authentication user.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // `app_meta/demo_seed` and `app_meta/demo_accounts`.
+    // These are bootstrap flags, not user data: the app has to know whether the
+    // demo records have already been written *before* anyone signs in, so reads
+    // are public. Writes still require a session (the seeder is authenticated
+    // by the demo accounts it creates).
+    match /app_meta/{doc} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // `bakery_students` — one document per student, keyed by the Auth uid.
+    // No password is ever stored here; it lives in Firebase Authentication.
+    //
+    // The write rule is deliberately broad because the one-time demo seeder
+    // writes the three demo profiles. To tighten for production, replace
+    // `create, update` with:
+    //     allow create, update: if request.auth.uid == uid;
+    // and seed the demo accounts from a Cloud Function or the Admin SDK.
+    match /students/{uid} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null;
+    }
+
+    // `bakery_members` — the bakery staff accounts that may open the dashboard.
+    match /bakery_members/{uid} {
+      allow read, write: if request.auth != null;
+    }
+
+    // `bakery_orders` — document id is the order id (`CK####`).
+    //
+    // Students read their own orders through a `studentId` query, and the
+    // bakery dashboard reads every order. The next order id is derived from the
+    // highest existing id (`generateOrderId()` in `js/app.js`), which needs a
+    // read of the collection. To tighten, keep a counter document and restrict
+    // reads to `resource.data.studentId == <the caller's STU id>` for students.
+    match /orders/{orderId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // `bakery_notifications` — one row per notification, linked to a student
+    // and an order, exactly like the original `bakery_notifications` array.
+    match /notifications/{notificationId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Everything else is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
