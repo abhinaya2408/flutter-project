@@ -1,0 +1,204 @@
+rules_version = '2';
+
+// ===========================================================================
+// Crumb & Cream — PROPOSED tightened Firestore rules.
+//
+// THIS FILE IS NOT DEPLOYED AND NOT USED BY THE APP YET.
+// The live rules are still `firestore.rules` (referenced by firebase.json), so
+// nothing about the running system changes until you review this, switch
+// firebase.json to point at it, and deploy it yourself.
+//
+// Why it exists
+// -------------
+// The original rules grant any signed-in user read/write on every collection.
+// Two of those grants now matter a great deal:
+//
+//   1. `bakery_members/{uid}` is writable by ANY authenticated user, so a
+//      student could create their own bakery-member document and open the
+//      bakery dashboard. WhatsApp verification must never be able to do that,
+//      and neither should a hand-written client call.
+//   2. `students/{uid}` is writable by ANY authenticated user, so `phoneVerified`
+//      (written by the trusted OTP backend) could be forged by a client.
+//
+// Every change below is explained, with its consequences, in
+// `docs/WHATSAPP_OTP.md` § 5. The short version:
+//
+//   * reads are unchanged wherever the app needs them, and narrowed where the
+//     app never reads across users;
+//   * writes become owner-scoped and field-scoped;
+//   * the two server-only OTP collections are closed to clients entirely
+//     (Cloud Functions use the Admin SDK, which bypasses these rules);
+//   * role material (`bakery_members`) becomes server-writable only.
+//
+// APPLYING THIS FILE HAS KNOWN CONSEQUENCES for the client-side demo seeder —
+// see § 5.2 of the doc before deploying.
+// ===========================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // `exists()` first: `get()` on a missing document would error the whole
+    // rule and deny the request outright.
+    function isBakeryMember() {
+      return signedIn() && exists(
+        /databases/$(database)/documents/bakery_members/$(request.auth.uid)
+      );
+    }
+
+    // The caller's own student id, or '' when they have no student profile.
+    function myStudentId() {
+      return isSelf(request.auth.uid)
+        && exists(/databases/$(database)/documents/students/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/students/$(request.auth.uid)).data.studentId
+        : '';
+    }
+
+    // ---------- app_meta/{doc} — UNCHANGED ----------
+    // Bootstrap flags only, read before anyone signs in, so reads stay public.
+    // Writes stay limited to signed-in users (the seeder writes them while
+    // signed in as the demo owner).
+    match /app_meta/{doc} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    // ---------- students/{uid} — TIGHTENED ----------
+    match /students/{uid} {
+      // CHANGED: was `request.auth != null` (any signed-in user could read any
+      // student's profile). Only the owner can read their own.
+      // Nothing in the app reads another student's document: the bakery
+      // dashboard renders contact details from the order itself, and
+      // `studentIdExists()` is never called. If the dashboard later needs it,
+      // add an explicit `|| isBakeryMember()` clause here — do not reopen it.
+      allow read: if isSelf(uid);
+
+      // CHANGED: was `request.auth != null` (anyone could create a profile for
+      // any uid). A profile can now only be created for your own uid, and the
+      // shape must match what the registration form actually collects.
+      // `phoneVerified` must be false on create: only the OTP backend, which
+      // runs with the Admin SDK, may ever set it to true.
+      allow create: if isSelf(uid)
+        && request.resource.data.fullName is string
+        && request.resource.data.studentId is string
+        && request.resource.data.email is string
+        && request.resource.data.phone is string
+        && request.resource.data.fullName.size() > 0
+        && request.resource.data.studentId.size() > 0
+        && request.resource.data.phoneVerified == false
+        && !request.resource.data.keys().hasAny([
+             'role',
+             'phoneE164',
+             'phoneMasked',
+             'phoneVerifiedAt',
+             'phoneVerifiedMethod',
+           ]);
+
+      // CHANGED: was an unrestricted update. Now only the editable profile
+      // fields may change, and the verification fields are frozen at their
+      // current value. `email` is deliberately excluded — it is the address
+      // copied onto orders and it is validated at registration; add it here if
+      // you build a profile screen that legitimately edits it.
+      allow update: if isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['fullName', 'phone', 'updatedAt'])
+        && request.resource.data.phoneVerified == resource.data.get('phoneVerified', false);
+
+      // CHANGED: was `request.auth != null`. Profile deletion is now an admin
+      // operation only. (`DemoSeedService._wipe()` deletes demo student
+      // documents from the client, so "Clear Demo Data" needs to move to an
+      // Admin SDK path — see § 5.2.)
+      allow delete: if false;
+    }
+
+    // ---------- bakery_members/{uid} — TIGHTENED (the important one) ----------
+    match /bakery_members/{uid} {
+      // A member sees their own record. Bakery members are identified by the
+      // existence of this document, so it must not be client-writable.
+      allow read: if isSelf(uid) || isBakeryMember();
+
+      // CHANGED: was `request.auth != null` — i.e. any signed-in user could
+      // create a bakery-member document for themselves and gain dashboard
+      // access. Writes are now server-only: grant bakery access by adding the
+      // document from the Firebase console or with the Admin SDK. The WhatsApp
+      // OTP backend never writes here either; it only ever updates
+      // `phoneVerified*` on a document that already exists.
+      allow write: if false;
+    }
+
+    // ---------- orders/{orderId} — TIGHTENED ----------
+    match /orders/{orderId} {
+      // A student may read only their own orders; a bakery member may read all.
+      // The student's history query filters on `studentId == <their own id>`,
+      // which Firestore can verify against this rule.
+      allow read: if isBakeryMember()
+        || (signedIn() && resource.data.studentId == myStudentId());
+
+      // A student may create an order only for their own student id.
+      allow create: if signedIn()
+        && request.resource.data.studentId == myStudentId();
+
+      // Only a bakery member may move an order along, and only its status.
+      // NOTE: `OrderService.generateOrderId()` currently reads the whole
+      // collection to derive the next `CK####` id and swallows the failure,
+      // falling back to `CK1024`. Under these rules that read is denied, which
+      // is exactly the `permission-denied` seen on order placement. Replace it
+      // with a counter document or a collision-resistant id BEFORE applying
+      // this file (see § 5.3).
+      allow update: if isBakeryMember()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'updatedAt']);
+
+      allow delete: if isBakeryMember();
+    }
+
+    // ---------- notifications/{notificationId} — TIGHTENED ----------
+    match /notifications/{notificationId} {
+      // Notifications are addressed to a student by `studentId`.
+      allow read: if isBakeryMember()
+        || (signedIn() && resource.data.studentId == myStudentId());
+
+      allow create: if isBakeryMember()
+        || (signedIn() && request.resource.data.studentId == myStudentId());
+
+      // A student may only flip the `read` flag on their own notification;
+      // the bakery may change anything (it writes status messages).
+      allow update: if isBakeryMember()
+        || (signedIn()
+            && resource.data.studentId == myStudentId()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['read']));
+
+      allow delete: if isBakeryMember();
+    }
+
+    // ---------- OTP server-only collections — CLOSED ----------
+    // `otp_rate_limits` holds hashed-key sliding windows and `otp_verifications`
+    // holds the audit trail. Both are read and written exclusively by the OTP
+    // Cloud Functions, which use the Admin SDK and bypass these rules, so
+    // denying clients costs the feature nothing.
+    // Recommended: add a Firestore TTL policy on `expiresAt` for
+    // `otp_rate_limits` so the documents clean themselves up.
+    match /otp_rate_limits/{doc} {
+      allow read, write: if false;
+    }
+
+    match /otp_verifications/{doc} {
+      allow read, write: if false;
+    }
+
+    // Everything else stays closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

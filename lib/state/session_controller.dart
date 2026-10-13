@@ -101,6 +101,48 @@ class SessionController extends ChangeNotifier {
     return member;
   }
 
+  /// Finishes a registration whose Firestore profile write failed, using the
+  /// session that registration already established. See [ProfileWriteFailure].
+  Future<StudentProfile> ensureStudentProfile({
+    required String fullName,
+    required String studentId,
+    required String phone,
+    required String email,
+  }) async {
+    final StudentProfile profile = await _auth.ensureStudentProfile(
+      fullName: fullName,
+      studentId: studentId,
+      phone: phone,
+      email: email,
+    );
+    _student = profile;
+    _owner = null;
+    notifyListeners();
+    return profile;
+  }
+
+  /// Completes a WhatsApp verification: the backend already proved the phone
+  /// number, so this exchanges its custom token for a Firebase session and
+  /// stores whichever account the profile documents resolve to.
+  Future<SessionSignIn> loginWithWhatsAppOtp({required String customToken}) async {
+    final SessionSignIn result = await _auth.signInWithCustomToken(customToken);
+    _student = result.student;
+    _owner = result.owner;
+    notifyListeners();
+    return result;
+  }
+
+  /// Re-reads the signed-in student's profile after linking a WhatsApp number,
+  /// so `phoneVerified` in the session matches Firestore without a re-login.
+  Future<StudentProfile?> reloadStudentProfile() async {
+    final StudentProfile? refreshed = await _auth.restoreStudent();
+    if (refreshed != null) {
+      _student = refreshed;
+      notifyListeners();
+    }
+    return refreshed;
+  }
+
   /// `handleStudentLogout()`
   Future<void> logoutStudent() async {
     await _auth.logout();

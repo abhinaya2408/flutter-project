@@ -45,6 +45,50 @@ class AppConfig {
   /// Firebase Storage folder for uploaded reference photos (the original kept
   /// the image inline as a Data URL on the order document).
   static const String referenceImageFolder = 'reference_images';
+
+  // ---------------- Reference photos (Cloudinary) ----------------
+  //
+  // Cloudinary's *unsigned* upload flow. The cloud name and the upload preset
+  // are public by design — an unsigned preset exists precisely so a client can
+  // upload without holding a credential — and neither is a secret.
+  //
+  // NEVER add a Cloudinary API key, API secret or signed-upload credential in
+  // this file: anything here ships inside the app. Deleting or overwriting an
+  // asset needs a signed call from a trusted backend.
+
+  /// Cloudinary cloud name.
+  static const String cloudinaryCloudName = 'haryqfbk';
+
+  /// Unsigned upload preset. It must be configured in the Cloudinary console
+  /// as **Unsigned** and must allow images of at most 2 MB.
+  static const String cloudinaryUploadPreset = 'crumbly_reference_upload';
+
+  /// Which provider the reference-photo upload uses.
+  ///
+  /// `true`  → Cloudinary (unsigned upload), the configured provider.
+  /// `false` → the previous Firebase Storage path, kept as a switchable
+  ///           fallback so the old behaviour can be restored without touching
+  ///           any other code.
+  static const bool useCloudinaryForReferenceImages = true;
+
+  /// Whether a usable Cloudinary configuration is present.
+  static bool get isCloudinaryConfigured =>
+      cloudinaryCloudName.trim().isNotEmpty &&
+      cloudinaryUploadPreset.trim().isNotEmpty;
+
+  // ---------------- WhatsApp OTP (Firebase Cloud Functions) ----------------
+  //
+  // These three values are the *only* thing the client knows about the
+  // WhatsApp verification backend. There is no provider credential here, and
+  // there must never be one: the Twilio call happens in `functions/`.
+
+  /// Region the OTP callables are deployed to. Must match the backend's
+  /// `OTP_FUNCTIONS_REGION`.
+  static const String otpFunctionsRegion = 'us-central1';
+
+  /// Exported names in `functions/src/index.ts`.
+  static const String requestOtpFunction = 'requestWhatsAppOtp';
+  static const String verifyOtpFunction = 'verifyWhatsAppOtp';
 }
 
 /// A demo account definition used by the seeder.

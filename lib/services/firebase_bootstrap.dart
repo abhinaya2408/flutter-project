@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import '../firebase_options.dart';
 import '../state/session_controller.dart';
 import 'demo_seed_service.dart';
+import 'firebase_emulator.dart';
 
 /// The result of starting up the app.
 class BootstrapResult {
@@ -26,10 +27,26 @@ class FirebaseBootstrap {
   FirebaseBootstrap._();
 
   static Future<BootstrapResult> run(SessionController session) async {
-    try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
+    // Check the configuration *before* initialising. On a platform whose
+    // FirebaseOptions are still placeholders (today: the web build until the
+    // Web app registration is filled in) `initializeApp` can appear to succeed
+    // and then fail later, on the first Auth or Firestore call — which would
+    // drop the user onto a half-working landing page instead of the setup
+    // notice. Refusing early keeps that state honest.
+    final FirebaseOptions? options = DefaultFirebaseOptions.tryCurrentPlatform();
+    if (options == null || !DefaultFirebaseOptions.isConfigured) {
+      return BootstrapResult(
+        ready: false,
+        errorMessage: _setupMessage(
+          options == null
+              ? 'Firebase is not configured for this platform.'
+              : 'This build still uses the placeholder Firebase configuration.',
+        ),
       );
+    }
+
+    try {
+      await Firebase.initializeApp(options: options);
     } catch (error) {
       debugPrint('Firebase.initializeApp failed: $error');
       return BootstrapResult(
@@ -37,6 +54,10 @@ class FirebaseBootstrap {
         errorMessage: _setupMessage(error),
       );
     }
+
+    // Local emulators, for development and the integration tests. A no-op
+    // unless the run was started with `--dart-define=USE_FIREBASE_EMULATOR=true`.
+    await FirebaseEmulator.connectIfRequested();
 
     // `seedDemoData()` — runs once, guarded by the demo seed flag.
     await DemoSeedService().ensureSeeded();

@@ -16,6 +16,8 @@ class StudentProfile {
     required this.fullName,
     required this.email,
     required this.phone,
+    this.phoneE164 = '',
+    this.phoneVerified = false,
   });
 
   /// Firebase Authentication uid (also the Firestore document id).
@@ -24,7 +26,18 @@ class StudentProfile {
   final String studentId;
   final String fullName;
   final String email;
+
+  /// The national contact number the app has always stored (10 digits). Left
+  /// untouched by WhatsApp verification so existing orders keep their format.
   final String phone;
+
+  /// The same number in E.164, written by the trusted backend when the student
+  /// verifies it on WhatsApp. Never written by the client.
+  final String phoneE164;
+
+  /// Set by the trusted backend only. A client write of this field is rejected
+  /// by the Firestore rules in `firestore.rules.proposed`.
+  final bool phoneVerified;
 
   /// What the session stores — `setCurrentStudent()` in `js/auth.js` only keeps
   /// these four fields.
@@ -40,6 +53,8 @@ class StudentProfile {
         'fullName': fullName,
         'email': email,
         'phone': phone,
+        if (phoneE164.isNotEmpty) 'phoneE164': phoneE164,
+        'phoneVerified': phoneVerified,
       };
 
   factory StudentProfile.fromMap(String uid, Map<String, dynamic> map) =>
@@ -49,6 +64,8 @@ class StudentProfile {
         fullName: (map['fullName'] ?? '') as String,
         email: (map['email'] ?? '') as String,
         phone: (map['phone'] ?? '') as String,
+        phoneE164: (map['phoneE164'] ?? '') as String,
+        phoneVerified: map['phoneVerified'] == true,
       );
 }
 

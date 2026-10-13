@@ -16,6 +16,7 @@ class StudentPageScaffold extends StatefulWidget {
   const StudentPageScaffold({
     required this.body,
     this.activeTab,
+    this.bottomBar,
     super.key,
   });
 
@@ -23,6 +24,13 @@ class StudentPageScaffold extends StatefulWidget {
   final String? activeTab;
 
   final Widget body;
+
+  /// Optional persistent action bar pinned below the scrollable body, so the
+  /// page's primary action (and its price) never scrolls out of reach. The
+  /// caller supplies the bar; it is laid out outside the scroll view, so it
+  /// cannot cover fields, and it rises with the keyboard instead of hiding
+  /// under it.
+  final Widget? bottomBar;
 
   @override
   State<StudentPageScaffold> createState() => _StudentPageScaffoldState();
@@ -99,6 +107,7 @@ class _StudentPageScaffoldState extends State<StudentPageScaffold> {
               },
             ),
             Expanded(child: widget.body),
+            if (widget.bottomBar != null) widget.bottomBar!,
           ],
         ),
       ),

@@ -9,6 +9,7 @@ import '../data/catalog.dart';
 import '../models/customization_draft.dart';
 import '../models/order.dart';
 import '../data/order_status.dart';
+import '../services/cloudinary_image_service.dart';
 import '../services/order_service.dart';
 import '../services/reference_image_service.dart';
 import '../state/customize_controller.dart';
@@ -30,7 +31,6 @@ import '../widgets/page_container.dart';
 import '../widgets/page_scaffold.dart';
 import '../widgets/responsive.dart';
 import '../widgets/upload_area.dart';
-import 'package:firebase_core/firebase_core.dart';
 
 /// `customize.html` — `initCustomizePage()` in `js/customize.js`.
 class CustomizeScreen extends StatefulWidget {
@@ -49,6 +49,17 @@ class _CustomizeScreenState extends State<CustomizeScreen> {
   String? _dateError;
   String? _timeError;
   bool _submitting = false;
+
+  /// The id reserved for the submission in progress. A retry after a failure
+  /// reuses it, so a timeout, a slow network or a double tap cannot create a
+  /// second order for the same submission.
+  String? _pendingOrderId;
+
+  /// The reference photo already uploaded during this submission, and the pick
+  /// it belongs to. Cached so a retry after a failed order write does not
+  /// upload the same photo again (which would orphan a Cloudinary asset).
+  String? _uploadedImageUrl;
+  String? _uploadedImageFor;
 
   @override
   void initState() {
@@ -161,32 +172,61 @@ class _CustomizeScreenState extends State<CustomizeScreen> {
       return;
     }
 
-    final student = context.read<SessionController>().student;
-    if (student == null) return;
+    // The session carries the profile, but only Firebase Authentication carries
+    // the credential Firestore actually checks. Verify both: a stale in-memory
+    // profile with a missing/expired Auth session is exactly the state that
+    // produces `cloud_firestore/permission-denied` on the write below.
+    final SessionController session = context.read<SessionController>();
+    final student = session.student;
+    final String? blockReason = OrderPlacementGuard.blockReason(
+      studentUid: student?.uid,
+      authUid: _signedInUid(),
+    );
+
+    // `student == null` is repeated here only so the compiler can promote the
+    // type for the order fields below; the guard above already covers the case.
+    if (blockReason != null || student == null) {
+      // This used to be a silent `return`, which looked like a dead button.
+      AppToast.show(
+        context,
+        blockReason ?? 'Please sign in before placing an order.',
+        type: ToastType.error,
+      );
+      await session.logoutStudent();
+      if (!mounted) return;
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        '/student-login',
+        (Route<dynamic> _) => false,
+      );
+      return;
+    }
 
     setState(() => _submitting = true);
     try {
       final OrderService orderService = OrderService();
-      final String orderId = await orderService.generateOrderId();
+
+      // One id per submission, reused by every retry.
+      final String orderId =
+          _pendingOrderId ??= await orderService.generateOrderId();
 
       String referenceImage = '';
       final ReferenceImageFile? file = _controller.draft.referenceImage;
 
       if (file != null) {
+        final String fileKey = '${file.name}:${file.size}';
         try {
-          referenceImage = await ReferenceImageService()
-              .uploadReferenceImage(file: file, orderId: orderId);
+          // Upload once per pick: a retry reuses the URL already obtained.
+          if (_uploadedImageUrl == null || _uploadedImageFor != fileKey) {
+            _uploadedImageUrl = await ReferenceImageService()
+                .uploadReferenceImage(file: file, orderId: orderId);
+            _uploadedImageFor = fileKey;
+          }
+          referenceImage = _uploadedImageUrl!;
+        } on CloudinaryUploadException catch (error) {
+          _reportUploadFailure(error.message);
+          return;
         } on FirebaseException catch (error) {
-          if (!mounted) return;
-
-          setState(() => _submitting = false);
-
-          AppToast.show(
-            context,
-            'Photo upload failed (${error.code}). '
-            'Your order was not placed. Please try again without the photo.',
-            type: ToastType.error,
-          );
+          _reportUploadFailure('Photo upload failed (${error.code}).');
           return;
         }
       }
@@ -215,6 +255,7 @@ class _CustomizeScreenState extends State<CustomizeScreen> {
         updatedAt: DateTime.now().toUtc().toIso8601String(),
       );
 
+      // Success is reported only once Firestore has accepted the write.
       await orderService.createOrder(order);
       if (!mounted) return;
       AppToast.show(
@@ -228,17 +269,146 @@ class _CustomizeScreenState extends State<CustomizeScreen> {
         '/order-confirmation',
         arguments: orderId,
       );
+    } on FirebaseException catch (error) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      AppToast.show(context, _orderWriteMessage(error), type: ToastType.error);
     } catch (error) {
       if (!mounted) return;
       setState(() => _submitting = false);
-      AppToast.show(context, '$error', type: ToastType.error);
+      AppToast.show(
+        context,
+        'Could not place your order. Please try again. (${error.runtimeType})',
+        type: ToastType.error,
+      );
     }
+  }
+
+  /// The signed-in Firebase uid, or `null` when it cannot be established.
+  ///
+  /// Reading `FirebaseAuth.instance` throws when Firebase is not initialised;
+  /// that is a "no usable session" condition, not a crash worth showing a
+  /// student in the middle of checkout.
+  String? _signedInUid() {
+    try {
+      return FirebaseAuth.instance.currentUser?.uid;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Reports a failed photo upload without ever implying the order was saved.
+  void _reportUploadFailure(String message) {
+    if (!mounted) return;
+    setState(() => _submitting = false);
+    AppToast.show(
+      context,
+      '$message Your order was not placed — you can retry, or submit without '
+      'a photo.',
+      type: ToastType.error,
+    );
+  }
+
+  /// Turns a Firestore failure into something a student can act on, instead of
+  /// dumping a raw exception into a toast.
+  String _orderWriteMessage(FirebaseException error) {
+    switch (error.code) {
+      case 'permission-denied':
+        return 'Firestore refused to save the order (permission-denied): the '
+            'database security rules do not allow this write. See '
+            'docs/ORDER_PLACEMENT.md.';
+      case 'unauthenticated':
+        return 'Your session expired. Please sign in again.';
+      case 'unavailable':
+        return Validators.networkUnavailable;
+      case 'deadline-exceeded':
+        return 'Saving the order timed out. Please try again.';
+      default:
+        return 'Could not save your order (${error.code}). Please try again.';
+    }
+  }
+
+  /// The persistent checkout bar — price on the left, one primary action on the
+  /// right, always reachable without scrolling back up.
+  ///
+  /// The action stays tappable while selections are incomplete on purpose: a
+  /// disabled primary button that explains nothing is the "silently does
+  /// nothing" failure mode. The hint under it always names what is still
+  /// missing, and tapping surfaces the detailed field errors.
+  Widget _checkoutBar() {
+    final PlaceOrderValidation validation = _controller.validate();
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.white,
+        border: Border(
+          top: BorderSide(color: AppColors.border, width: AppBorders.regular),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sp5,
+            vertical: AppSpacing.sp3,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Text(
+                        'Estimated Total',
+                        style: AppText.inter(
+                          size: 12.5,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                      Text(
+                        '₹${_controller.total}',
+                        style: AppText.poppins(size: 20),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: AppSpacing.sp4),
+                  Expanded(
+                    child: AppButton(
+                      label:
+                          _submitting ? 'Placing order…' : 'Place Cake Order',
+                      block: true,
+                      onPressed: _submitting ? null : _placeOrder,
+                    ),
+                  ),
+                ],
+              ),
+              if (!validation.isValid)
+                Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.sp2),
+                  child: Text(
+                    validation.formError ?? '',
+                    style: AppText.inter(
+                      size: 12.5,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return StudentPageScaffold(
       activeTab: 'customize',
+      bottomBar: _checkoutBar(),
       body: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -619,13 +789,9 @@ class _CustomizeScreenState extends State<CustomizeScreen> {
                   ],
                 ),
               ),
+              // The action itself lives in the persistent bar, so there is
+              // exactly one Place Order control on this screen.
               FieldErrorText(message: _formError),
-              const SizedBox(height: AppSpacing.sp3),
-              AppButton(
-                label: 'Place Cake Order',
-                block: true,
-                onPressed: _submitting ? null : _placeOrder,
-              ),
             ],
           ),
         ),

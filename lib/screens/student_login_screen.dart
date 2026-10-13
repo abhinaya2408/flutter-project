@@ -149,6 +149,15 @@ class _StudentLoginScreenState extends State<StudentLoginScreen> {
                     block: true,
                     onPressed: _busy ? null : _submit,
                   ),
+                  const SizedBox(height: 16),
+                  Center(
+                    child: AuthFooterLink(
+                      leadingText: 'Or sign in by verifying your ',
+                      linkText: 'WhatsApp number',
+                      onTap: () => Navigator.of(context)
+                          .pushNamed('/whatsapp-verify'),
+                    ),
+                  ),
                   const SizedBox(height: 24),
                   const DemoBanner(
                     title: 'Demo student account',

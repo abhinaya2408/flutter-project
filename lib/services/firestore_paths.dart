@@ -28,4 +28,10 @@ class FirestorePaths {
   /// cannot be re-listed from the client, so their uids are remembered here so
   /// "Clear Demo Data" can re-seed without signing anybody in.
   static const String demoAccounts = 'demo_accounts';
+
+  /// `app_meta/order_counter` — the order-number counter. Kept in `app_meta`
+  /// because that collection is already readable/writable by signed-in users
+  /// under both the current rules and `firestore.rules.proposed`, so issuing an
+  /// order id needs no rule change.
+  static const String orderCounter = 'order_counter';
 }

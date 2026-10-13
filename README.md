@@ -269,3 +269,37 @@ college_bakery_flutter/
 Dependencies: `firebase_core`, `firebase_auth`, `cloud_firestore`,
 `firebase_storage`, `provider`, `google_fonts` (Inter + Poppins, the same two
 families the pages load from Google Fonts) and `image_picker`.
+
+---
+
+## 7. Flutter Web / PWA deployment
+
+The app now also builds for the **web** and deploys to **Firebase Hosting** as an
+installable PWA, so anyone with the link can open Crumb & Cream on a phone and
+add it to the home screen. Full instructions live in
+[`docs/WEB_DEPLOYMENT.md`](docs/WEB_DEPLOYMENT.md).
+
+What was added for that:
+
+| File | Purpose |
+| --- | --- |
+| `web/` | Flutter web shell — `index.html`, `manifest.json`, icons |
+| `web/manifest.json` | App name, coral `#FF6F61` theme, 192/512 + maskable icons, `standalone` |
+| `lib/firebase_options.dart` | Added the `web` Firebase options (`kIsWeb` previously threw `UnsupportedError`) |
+| `lib/services/firebase_bootstrap.dart` | Stops on a placeholder config instead of showing a half-working app |
+| `firebase.json` | `hosting` target publishing `build/web` |
+| `.firebaserc` | Default project `bakeflow-20fb9`, so `firebase deploy` does not prompt |
+
+```bash
+flutter build web --release
+firebase deploy --only hosting
+```
+
+Two things are still needed before the web build is functional: registering a
+**Web** app in Firebase (it has its own `apiKey`/`appId`, which cannot be reused
+from the Android/iOS entries), and having the Hosting domain on the
+Authentication **authorized domains** list. See `docs/WEB_DEPLOYMENT.md` §2–3.
+
+> **Deployed and live at <https://bakeflow-20fb9.web.app>.** A Firebase Web app
+> (`Crumb & Cream Web`) was registered and `firebase deploy --only hosting`
+> released the build. See `docs/WEB_DEPLOYMENT.md` §9 for the verification record.

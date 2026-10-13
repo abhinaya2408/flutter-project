@@ -14,6 +14,7 @@ import 'screens/owner_dashboard_screen.dart';
 import 'screens/owner_order_details_screen.dart';
 import 'screens/student_login_screen.dart';
 import 'screens/student_register_screen.dart';
+import 'screens/whatsapp_verify_screen.dart';
 import 'services/firebase_bootstrap.dart';
 import 'state/session_controller.dart';
 import 'theme/app_theme.dart';
@@ -75,6 +76,12 @@ class CrumbAndCreamApp extends StatelessWidget {
                 settings: settings,
                 builder: (BuildContext context) =>
                     const StudentRegisterScreen(),
+              );
+            case '/whatsapp-verify':
+              return MaterialPageRoute<void>(
+                settings: settings,
+                builder: (BuildContext context) =>
+                    const WhatsAppVerifyScreen(),
               );
             case '/bakery-login':
               return MaterialPageRoute<void>(

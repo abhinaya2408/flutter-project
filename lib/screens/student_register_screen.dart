@@ -38,6 +38,12 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
   bool _submitted = false;
   bool _busy = false;
 
+  /// Set when Firebase Authentication created the account but the Firestore
+  /// profile write failed. The next attempt then finishes the *profile* instead
+  /// of trying to re-create the account (which would fail: the email is already
+  /// in use).
+  bool _needsProfileRetry = false;
+
   @override
   void dispose() {
     _fullName.dispose();
@@ -89,13 +95,27 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
 
     setState(() => _busy = true);
     try {
-      await context.read<SessionController>().registerStudent(
-            fullName: fullName,
-            studentId: studentId,
-            phone: phone,
-            email: email,
-            password: password,
-          );
+      final SessionController session = context.read<SessionController>();
+
+      // A retry after a partial failure finishes the profile for the account
+      // that already exists, rather than creating a second account.
+      if (_needsProfileRetry) {
+        await session.ensureStudentProfile(
+          fullName: fullName,
+          studentId: studentId,
+          phone: phone,
+          email: email,
+        );
+      } else {
+        await session.registerStudent(
+          fullName: fullName,
+          studentId: studentId,
+          phone: phone,
+          email: email,
+          password: password,
+        );
+      }
+
       if (!mounted) return;
       AppToast.show(
         context,
@@ -106,6 +126,14 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
       if (!mounted) return;
       Navigator.of(context)
           .pushNamedAndRemoveUntil('/customize', (Route<dynamic> _) => false);
+    } on ProfileWriteFailure catch (error) {
+      // The Auth account exists; keep the session and let the user finish.
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _needsProfileRetry = true;
+        _emailError = error.message;
+      });
     } on AuthException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -207,7 +235,9 @@ class _StudentRegisterScreenState extends State<StudentRegisterScreen> {
                   ),
                   const SizedBox(height: 24),
                   AppButton(
-                    label: 'Create Account',
+                    label: _needsProfileRetry
+                        ? 'Finish Setting Up Profile'
+                        : 'Create Account',
                     block: true,
                     onPressed: _busy ? null : _submit,
                   ),                ],

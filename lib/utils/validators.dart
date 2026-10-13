@@ -1,3 +1,5 @@
+import 'phone_number.dart';
+
 /// Validation — the rules and messages from `college-bakery/js/auth.js` and
 /// `js/customize.js`. Messages are reproduced verbatim.
 class Validators {
@@ -29,6 +31,10 @@ class Validators {
       'Please upload an image smaller than 2 MB.';
   static const String imageReadFailed =
       'Could not read this image. Please try another file.';
+  static const String otpPhoneInvalid =
+      'Enter a valid phone number, including the country code.';
+  static const String otpCodeInvalid =
+      'Enter the 6-digit code sent on WhatsApp.';
   static const String dateRequired = 'Please select a date.';
   static const String dateInPast = 'Please choose a date that is today or later.';
   static const String timeRequired = 'Please select a time.';
@@ -94,6 +100,18 @@ class Validators {
   /// `confirmPassword !== password || !confirmPassword`
   static String? confirmPassword(String value, String passwordValue) =>
       (value != passwordValue || value.isEmpty) ? passwordsDoNotMatch : null;
+
+  // ---------- WhatsApp verification ----------
+  /// The national number for the WhatsApp screen, normalised to E.164 with the
+  /// selected dial code. Mirrors `functions/src/phone.ts`.
+  static String? otpPhoneNumber(String value, {String dialCode = '+91'}) =>
+      PhoneNumber.toE164(value, dialCode: dialCode) == null
+          ? otpPhoneInvalid
+          : null;
+
+  /// `/^\d{6}$/` — the same shape the backend enforces before calling Twilio.
+  static String? otpCode(String value) =>
+      RegExp(r'^\d{6}$').hasMatch(value.trim()) ? null : otpCodeInvalid;
 
   // ---------- Customize / place order ----------
   static String? requiredDate(String? value) {

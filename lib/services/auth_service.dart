@@ -16,6 +16,38 @@ class AuthException implements Exception {
   String toString() => message;
 }
 
+/// The Firebase Authentication account was created, but its Firestore profile
+/// document could not be written.
+///
+/// The account is deliberately **kept** and the user stays signed in: that is
+/// what makes recovery possible. Signing out instead leaves an account the user
+/// can neither use nor re-create (the email is already in use), so the
+/// registration screen offers to finish the profile with [AuthService
+/// .ensureStudentProfile] on the next attempt.
+class ProfileWriteFailure extends AuthException {
+  ProfileWriteFailure(this.databaseCode)
+      : super(
+          'Your account was created, but your profile could not be saved '
+          '(database error: $databaseCode). Tap the button again to finish '
+          'setting it up.',
+        );
+
+  /// The Firestore error code, e.g. `permission-denied`.
+  final String databaseCode;
+}
+
+/// The account a sign-in resolved to. Exactly one of the two is set, matching
+/// the `students` / `bakery_members` split used everywhere else.
+class SessionSignIn {
+  const SessionSignIn({this.student, this.owner});
+
+  final StudentProfile? student;
+  final BakeryMember? owner;
+
+  bool get isStudent => student != null;
+  bool get isOwner => owner != null;
+}
+
 class AuthService {
   AuthService({FirebaseAuth? auth, FirebaseFirestore? firestore})
       : _auth = auth ?? FirebaseAuth.instance,
@@ -83,23 +115,65 @@ class AuthService {
 
     try {
       // Save the profile automatically under the Firebase Auth UID.
-      await _students.doc(user.uid).set({
-        ...profile.toMap(),
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _writeStudentProfile(user.uid, profile, isRepair: false);
 
       return profile;
     } on FirebaseException catch (error) {
-      // Keep the Auth account so it can be repaired instead of silently
-      // deleting an account after a Firestore failure.
-      await _auth.signOut();
+      // Keep the Auth account and the session so the profile write can simply
+      // be retried — see [ProfileWriteFailure].
+      throw ProfileWriteFailure(error.code);
+    }
+  }
 
+  /// Finishes a registration whose profile write failed, or repairs a profile
+  /// that went missing, for the account that is **already signed in**.
+  ///
+  /// Only ever writes under the current user's own uid, and merges rather than
+  /// overwrites, so a value the trusted backend has written (for example
+  /// `phoneVerified`) is preserved.
+  Future<StudentProfile> ensureStudentProfile({
+    required String fullName,
+    required String studentId,
+    required String phone,
+    required String email,
+  }) async {
+    final User? user = _auth.currentUser;
+
+    if (user == null) {
       throw AuthException(
-        'Your account was created, but the profile could not be saved. '
-        'Database error: ${error.code}. Please try again or contact support.',
+        'Your sign-in expired before your profile could be saved. '
+        'Please create your account again.',
       );
     }
+
+    final StudentProfile profile = StudentProfile(
+      uid: user.uid,
+      studentId: studentId.trim(),
+      fullName: fullName.trim(),
+      email: email.trim().toLowerCase(),
+      phone: phone.trim(),
+    );
+
+    try {
+      await _writeStudentProfile(user.uid, profile, isRepair: true);
+      return profile;
+    } on FirebaseException catch (error) {
+      throw ProfileWriteFailure(error.code);
+    }
+  }
+
+  Future<void> _writeStudentProfile(
+    String uid,
+    StudentProfile profile, {
+    required bool isRepair,
+  }) {
+    final Map<String, dynamic> data = <String, dynamic>{
+      ...profile.toMap(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      // A repair must not rewrite the original creation time.
+      if (!isRepair) 'createdAt': FieldValue.serverTimestamp(),
+    };
+    return _students.doc(uid).set(data, SetOptions(merge: isRepair));
   }
 
   // ---------------- STUDENT LOGIN ----------------
@@ -196,6 +270,68 @@ class AuthService {
     }
   }
 
+  // ---------------- WHATSAPP OTP SIGN-IN ----------------
+
+  /// Exchanges the backend's Firebase custom token for a real Firebase session.
+  ///
+  /// The token is minted by the trusted Cloud Function *after* Twilio confirms
+  /// the WhatsApp code, so this is the only step that turns a verified phone
+  /// number into an authenticated user. Profile resolution then follows exactly
+  /// the same path as a password sign-in, which keeps role routing identical.
+  Future<SessionSignIn> signInWithCustomToken(String customToken) async {
+    final UserCredential credential;
+
+    try {
+      credential = await _auth.signInWithCustomToken(customToken);
+    } on FirebaseAuthException catch (error) {
+      throw AuthException(_customTokenMessage(error));
+    }
+
+    final User? user = credential.user;
+
+    if (user == null) {
+      throw AuthException(
+        'We could not complete your WhatsApp sign-in. Please try again.',
+      );
+    }
+
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> studentSnapshot =
+          await _students.doc(user.uid).get();
+
+      if (studentSnapshot.exists && studentSnapshot.data() != null) {
+        return SessionSignIn(
+          student: StudentProfile.fromMap(user.uid, studentSnapshot.data()!),
+        );
+      }
+
+      final DocumentSnapshot<Map<String, dynamic>> memberSnapshot =
+          await _members.doc(user.uid).get();
+
+      if (memberSnapshot.exists) {
+        return SessionSignIn(
+          owner: BakeryMember(
+            email: user.email ?? '',
+            loggedInAt: DateTime.now().toUtc().toIso8601String(),
+          ),
+        );
+      }
+
+      // A verified number must never open a session for an account that has no
+      // profile: there would be nothing to route it to.
+      await _auth.signOut();
+      throw AuthException(
+        'Your account is missing its student or bakery profile. '
+        'Please contact support.',
+      );
+    } on AuthException {
+      rethrow;
+    } on FirebaseException catch (error) {
+      await _auth.signOut();
+      throw AuthException(_profileMessage(error));
+    }
+  }
+
   // ---------------- SESSION RESTORATION ----------------
 
   Future<StudentProfile?> restoreStudent() async {
@@ -281,6 +417,23 @@ class AuthService {
 
       default:
         return error.message ?? Validators.incorrectCredentials;
+    }
+  }
+
+  String _customTokenMessage(FirebaseAuthException error) {
+    switch (error.code) {
+      case 'invalid-custom-token':
+      case 'custom-token-mismatch':
+        return 'Your WhatsApp verification expired. Please verify your number again.';
+
+      case 'network-request-failed':
+        return Validators.networkUnavailable;
+
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait and try again.';
+
+      default:
+        return 'We could not complete your WhatsApp sign-in. Please try again.';
     }
   }
 

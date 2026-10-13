@@ -4,4 +4,12 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Debug builds only. The Firebase emulator suite (Authentication on 9099,
+         Cloud Firestore on 8080) speaks plaintext HTTP / h2c, which Android
+         blocks by default. `network_security_config.xml` allows cleartext for
+         the emulator hosts only; release builds do not include this source set,
+         so they are unaffected.
+    -->
+    <application android:networkSecurityConfig="@xml/network_security_config" />
 </manifest>
