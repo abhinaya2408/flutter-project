@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart' hide Order;
 
 import '../models/order.dart';
 import 'firestore_paths.dart';
+import 'dart:math' as math;
 
 /// Order-number bookkeeping.
 ///
@@ -134,32 +135,15 @@ class OrderService {
   /// sane rule set grants. Failures now propagate to the caller so the screen
   /// can say what actually went wrong.
   Future<String> generateOrderId() async {
-    final DocumentReference<Map<String, dynamic>> counter = _firestore
-        .collection(FirestorePaths.appMeta)
-        .doc(FirestorePaths.orderCounter);
+  final math.Random random = math.Random.secure();
 
-    final int number = await _firestore.runTransaction<int>(
-      (Transaction transaction) async {
-        final DocumentSnapshot<Map<String, dynamic>> snapshot =
-            await transaction.get(counter);
-        final Object? stored = snapshot.data()?['lastOrderNumber'];
-        final int next = OrderNumbering.nextNumber(
-          stored is int ? stored : (stored is num ? stored.toInt() : null),
-        );
-        transaction.set(
-          counter,
-          <String, dynamic>{
-            'lastOrderNumber': next,
-            'updatedAt': DateTime.now().toUtc().toIso8601String(),
-          },
-          SetOptions(merge: true),
-        );
-        return next;
-      },
-    );
+  final String suffix =
+      random.nextInt(1000000).toString().padLeft(6, '0');
 
-    return OrderNumbering.format(number);
+  return 'CK${DateTime.now().toUtc().microsecondsSinceEpoch}$suffix';
   }
+
+    
 
   /// `createOrder(order)` — the document id is the order id, so
   /// `getOrderById()` is a direct document read.
